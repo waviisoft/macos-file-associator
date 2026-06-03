@@ -6,21 +6,21 @@
 // system `swift` runtime that ships with the Xcode Command Line Tools.
 //
 // Usage:
-//   associator get  <type>                Show the app associated with a content type
-//   associator set  <type> <app> [role]   Associate a content type with an app
-//   associator info <type>                Resolve a type/extension and show details
+//   associator get  <type> [<type> ...]            Show the app(s) handling these types
+//   associator set  <type> [<type> ...] --to <app> [--role <role>]
+//                                                  Associate one or more types with an app
+//   associator info <type> [<type> ...]            Resolve type(s)/extension(s); show details
 //
 //   <type>  A UTI (e.g. net.daringfireball.markdown, public.plain-text)
-//           or a file extension (e.g. .md, md, markdown).
+//           or a file extension (e.g. .md, md, markdown). Multiple allowed.
 //   <app>   A bundle id (e.g. com.microsoft.VSCode), an app name
 //           (e.g. "Visual Studio Code"), or a path to a .app bundle.
 //   <role>  One of: all (default), viewer, editor.
 //
 // Examples:
-//   associator get .md
-//   associator get net.daringfireball.markdown
-//   associator set .md "Visual Studio Code"
-//   associator set net.daringfireball.markdown com.microsoft.VSCode editor
+//   associator get .md .markdown .mdown
+//   associator set .md .markdown .mdown --to "Visual Studio Code"
+//   associator set .swift .xcodeproj --to Xcode --role editor
 //
 
 import Foundation
@@ -40,19 +40,20 @@ func usage() -> Never {
     \(tool) — inspect and set macOS default app associations for content types.
 
     Usage:
-      \(tool) get  <type>                Show the app associated with a content type
-      \(tool) set  <type> <app> [role]   Associate a content type with an app
-      \(tool) info <type>                Resolve a type/extension and show details
+      \(tool) get  <type> [<type> ...]            Show the app(s) handling these types
+      \(tool) set  <type> [<type> ...] --to <app> [--role <role>]
+      \(tool) info <type> [<type> ...]            Resolve type(s); show details
 
-      <type>  A UTI (net.daringfireball.markdown) or extension (.md, md, markdown)
-      <app>   A bundle id (com.microsoft.VSCode), app name ("Visual Studio Code"),
-              or path to a .app bundle
-      <role>  all (default), viewer, or editor
+      <type>  A UTI (net.daringfireball.markdown) or extension (.md, md, markdown).
+              One or more may be given.
+      --to    The target app: a bundle id (com.microsoft.VSCode), app name
+              ("Visual Studio Code"), or path to a .app bundle. (alias: --app)
+      --role  all (default), viewer, or editor.
 
     Examples:
-      \(tool) get .md
-      \(tool) set .md "Visual Studio Code"
-      \(tool) set net.daringfireball.markdown com.microsoft.VSCode editor
+      \(tool) get .md .markdown .mdown
+      \(tool) set .md .markdown .mdown --to "Visual Studio Code"
+      \(tool) set .swift .xcodeproj --to Xcode --role editor
     """
     print(text)
     exit(0)
@@ -107,39 +108,96 @@ func describeApp(_ bundleID: String?) -> String {
     return bid
 }
 
-func currentHandler(_ uti: String, _ role: LSRolesMask) -> String? {
-    LSCopyDefaultRoleHandlerForContentType(uti as CFString, role)?.takeRetainedValue() as String?
+func currentHandler(_ uti: String) -> String? {
+    LSCopyDefaultRoleHandlerForContentType(uti as CFString, .all)?.takeRetainedValue() as String?
+}
+
+// Split argv (after the command) into positional tokens and recognized options.
+func parse(_ argv: [String]) -> (positionals: [String], app: String?, role: String?) {
+    var positionals: [String] = []
+    var app: String? = nil
+    var role: String? = nil
+    var i = 0
+    while i < argv.count {
+        let a = argv[i]
+        switch a {
+        case "--to", "--app":
+            i += 1
+            guard i < argv.count else { fail("\(a) requires a value") }
+            app = argv[i]
+        case "--role":
+            i += 1
+            guard i < argv.count else { fail("--role requires a value") }
+            role = argv[i]
+        default:
+            if a.hasPrefix("--") { fail("unknown option '\(a)'") }
+            positionals.append(a)
+        }
+        i += 1
+    }
+    return (positionals, app, role)
 }
 
 let args = Array(CommandLine.arguments.dropFirst())
 guard let command = args.first else { usage() }
+let rest = Array(args.dropFirst())
 
 switch command {
 case "-h", "--help", "help":
     usage()
 
-case "get", "info":
-    guard args.count >= 2 else { fail("\(command) requires a <type> argument") }
-    let token = args[1]
-    guard let uti = resolveType(token) else { fail("could not resolve a content type for '\(token)'") }
-    if command == "info" {
+case "get":
+    let (types, _, _) = parse(rest)
+    guard !types.isEmpty else { fail("get requires at least one <type>") }
+    for token in types {
+        guard let uti = resolveType(token) else {
+            FileHandle.standardError.write(Data("warning: could not resolve '\(token)', skipping\n".utf8))
+            continue
+        }
+        print("\(token)\t->\t\(describeApp(currentHandler(uti)))")
+    }
+
+case "info":
+    let (types, _, _) = parse(rest)
+    guard !types.isEmpty else { fail("info requires at least one <type>") }
+    for (idx, token) in types.enumerated() {
+        if idx > 0 { print("") }
+        guard let uti = resolveType(token) else {
+            FileHandle.standardError.write(Data("warning: could not resolve '\(token)', skipping\n".utf8))
+            continue
+        }
         let type = UTType(uti)
         print("input:      \(token)")
         print("uti:        \(uti)")
         print("extensions: \(type?.tags[.filenameExtension]?.joined(separator: ", ") ?? "(unknown)")")
         print("dynamic:    \(uti.hasPrefix("dyn.") ? "yes (no app/system declares this type)" : "no")")
+        print("handler:    \(describeApp(currentHandler(uti)))")
     }
-    print("type:       \(uti)")
-    print("handler:    \(describeApp(currentHandler(uti, .all)))")
 
 case "set":
-    guard args.count >= 3 else { fail("set requires <type> and <app> arguments") }
-    guard let uti = resolveType(args[1]) else { fail("could not resolve a content type for '\(args[1])'") }
-    guard let bundleID = resolveApp(args[2]) else { fail("could not resolve an app for '\(args[2])'") }
-    let role = roleMask(args.count >= 4 ? args[3] : nil)
-    let status = LSSetDefaultRoleHandlerForContentType(uti as CFString, role, bundleID as CFString)
-    if status != noErr { fail("LaunchServices returned status \(status)") }
-    print("set \(uti) -> \(describeApp(currentHandler(uti, .all)))")
+    let (types, appToken, roleToken) = parse(rest)
+    guard !types.isEmpty else { fail("set requires at least one <type>") }
+    guard let appToken = appToken else { fail("set requires a target app via --to <app>") }
+    guard let bundleID = resolveApp(appToken) else { fail("could not resolve an app for '\(appToken)'") }
+    let role = roleMask(roleToken)
+    var failures = 0
+    for token in types {
+        guard let uti = resolveType(token) else {
+            FileHandle.standardError.write(Data("warning: could not resolve '\(token)', skipping\n".utf8))
+            failures += 1
+            continue
+        }
+        let status = LSSetDefaultRoleHandlerForContentType(uti as CFString, role, bundleID as CFString)
+        if status != noErr {
+            FileHandle.standardError.write(Data("warning: '\(token)' (\(uti)) failed with status \(status)\n".utf8))
+            failures += 1
+            continue
+        }
+        // Report the app we set. LaunchServices caches handler lookups per
+        // process, so re-querying here would return a stale (pre-set) value.
+        print("\(token)\t->\t\(describeApp(bundleID))")
+    }
+    if failures > 0 { exit(1) }
 
 default:
     fail("unknown command '\(command)' (try: get, set, info, help)")

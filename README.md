@@ -29,33 +29,45 @@ ln -s "$PWD/associator" /usr/local/bin/associator
 ## Usage
 
 ```
-associator get  <type>                Show the app associated with a content type
-associator set  <type> <app> [role]   Associate a content type with an app
-associator info <type>                Resolve a type/extension and show details
+associator get  <type> [<type> ...]                          Show the app(s) handling these types
+associator set  <type> [<type> ...] --to <app> [--role <role>]   Associate one or more types with an app
+associator info <type> [<type> ...]                          Resolve type(s); show details
 ```
 
 - **`<type>`** — a UTI (`net.daringfireball.markdown`, `public.plain-text`) or a
   file extension (`.md`, `md`, `markdown`). Extensions are resolved to their UTI
-  automatically.
-- **`<app>`** — a bundle id (`com.microsoft.VSCode`), an app name
-  (`"Visual Studio Code"`), or a path to a `.app` bundle.
-- **`<role>`** — `all` (default), `viewer`, or `editor`.
+  automatically. **One or more** may be given to any command.
+- **`--to <app>`** — the target app: a bundle id (`com.microsoft.VSCode`), an app
+  name (`"Visual Studio Code"`), or a path to a `.app` bundle. (alias: `--app`)
+- **`--role <role>`** — `all` (default), `viewer`, or `editor`.
+
+Unresolvable types are skipped with a warning rather than aborting the batch, so
+you can pass a large list and let the tool sort out which ones map to a UTI.
 
 ### Examples
 
-See what opens Markdown files today:
+See what opens several Markdown variants today:
 
 ```sh
-$ associator get .md
-type:       net.daringfireball.markdown
-handler:    Antigravity (com.google.antigravity)
+$ associator get .md .markdown .mdown
+.md         ->  Antigravity (com.google.antigravity)
+.markdown   ->  Antigravity (com.google.antigravity)
+.mdown      ->  Antigravity (com.google.antigravity)
 ```
 
-Make Markdown open in VS Code:
+Point all of them at VS Code in one call:
 
 ```sh
-$ associator set .md "Visual Studio Code"
-set net.daringfireball.markdown -> Visual Studio Code (com.microsoft.VSCode)
+$ associator set .md .markdown .mdown --to "Visual Studio Code"
+.md         ->  Visual Studio Code (com.microsoft.VSCode)
+.markdown   ->  Visual Studio Code (com.microsoft.VSCode)
+.mdown      ->  Visual Studio Code (com.microsoft.VSCode)
+```
+
+Reserve Xcode-specific types for Xcode:
+
+```sh
+$ associator set .swift .xcodeproj .xcworkspace --to Xcode --role editor
 ```
 
 Inspect how an extension maps to a UTI:
@@ -66,7 +78,6 @@ input:      .mdx
 uti:        dyn.ah62d4rv4ge8043d2
 extensions: mdx
 dynamic:    yes (no app/system declares this type)
-type:       dyn.ah62d4rv4ge8043d2
 handler:    (none)
 ```
 
@@ -82,6 +93,21 @@ handler:    (none)
   type.
 - **Propagation.** Changes apply immediately to newly opened files, but Finder
   icons may take a moment (or a relaunch) to update.
+- **Per-process cache.** LaunchServices caches handler lookups per process, so a
+  `get` issued in the *same* process right after a `set` can return the old
+  value. `associator set` therefore reports the app it set rather than
+  re-querying; verify a change with a fresh `associator get`.
+- **Competing declarations.** When several installed apps declare the same
+  extension (common with VS Code "clones" like Cursor, or IDEs like Xcode), your
+  explicit choice is recorded as a user default and wins, but it can take a
+  LaunchServices rebuild to settle:
+
+  ```sh
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/\
+  LaunchServices.framework/Support/lsregister -kill -r \
+  -domain local -domain system -domain user
+  ```
+
 - **Scope.** Associations are per-user.
 
 ## License
